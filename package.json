@@ -1,9 +1,0 @@
-{
-  "homepage": "https://sxh1136.github.io/gel-annotator",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
-  }
-}

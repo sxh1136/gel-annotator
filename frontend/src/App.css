@@ -502,3 +502,19 @@ input[type="range"] {
   font-size: 14px;
   color: var(--text);
 }
+
+/* Fix sidebar scroll lock after large canvas/image load */
+.app-grid {
+  height: calc(100vh - 24px); /* explicit viewport-based height */
+}
+
+.panel-left.project-assets,
+.workspace-main {
+  min-height: 0;   /* critical for CSS grid children */
+}
+
+.panel-left.project-assets {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}

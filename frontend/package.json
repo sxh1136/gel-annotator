@@ -1,28 +1,26 @@
 {
-  "name": "frontend",
-  "private": true,
-  "version": "0.0.0",
   "type": "module",
+  "homepage": "https://sxh1136.github.io/gel-annotator/",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "oxlint",
-    "preview": "vite preview"
+    "typecheck": "tsc -b",
+    "build": "vite build",
+    "preview": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "konva": "^9.3.14",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-konva": "^18.2.10"
+    "konva": "^10.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-konva": "^19.2.5"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
-    "@types/react": "^18.2.79",
-    "@types/react-dom": "^18.2.25",
-    "@vitejs/plugin-react": "^6.0.4",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
     "gh-pages": "^6.3.0",
-    "oxlint": "^1.75.0",
-    "typescript": "~6.0.2",
-    "vite": "^8.2.0"
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1"
   }
 }
