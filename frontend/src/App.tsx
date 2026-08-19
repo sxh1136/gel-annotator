@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import axios from "axios";
 import { Group, Image as KonvaImage, Layer, Line, Rect, Stage, Text } from "react-konva";
 import "./App.css";
 import { LADDER_PRESET_GROUPS } from "./data/ladderPresets";
+import {
+  buildEqualLanes,
+  detectLadderBands,
+  grayscaleFromImageData,
+  parseLadderSizes,
+  preprocessGray,
+  type LaneBound,
+} from "./lib/gelProcessing";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-type LaneBound = { x0: number; x1: number };
-
-type AnalysisResponse = {
-  imageId: string;
-  imageUrl: string;
+type AnalysisState = {
   width: number;
   height: number;
   laneBounds: LaneBound[];
@@ -53,6 +54,11 @@ function GelImage({
 type ToastState = { type: "info" | "success"; message: string } | null;
 
 export default function App() {
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const saved = localStorage.getItem("gel-theme");
+    return saved === "dark" ? "dark" : "light";
+  });
+
   const [file, setFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState("");
   const [imgMeta, setImgMeta] = useState({ width: 1000, height: 500 });
@@ -71,43 +77,37 @@ export default function App() {
   const [laneLabelAngle, setLaneLabelAngle] = useState(32);
   const [transparentBg, setTransparentBg] = useState(false);
 
-  // native coordinates
-  const [laneRegion, setLaneRegion] = useState<[number, number]>([0, 999]);
-  const [ladderY, setLadderY] = useState<number[]>([]);
+  const [laneRegion, setLaneRegion] = useState<[number, number]>([0, 999]); // native coords
+  const [ladderY, setLadderY] = useState<number[]>([]); // native coords
 
-  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
+  const setIsAnalyzing = (_v: boolean) => {}; // intentionally no UI spinner for analyze
   const [isAnnotating, setIsAnnotating] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [toast, setToast] = useState<ToastState>(null);
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    const saved = localStorage.getItem("gel-theme");
-    return saved === "dark" ? "dark" : "light";
-  });
+
+  const [sourceImage, setSourceImage] = useState<HTMLImageElement | null>(null);
+  const [sourceImageData, setSourceImageData] = useState<ImageData | null>(null);
 
   const analyzeRunId = useRef(0);
-  const annotateRunId = useRef(0);
 
   const showToast = (message: string, type: "info" | "success" = "info") => {
     setToast({ type, message });
     window.setTimeout(() => setToast(null), 2200);
   };
 
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("gel-theme", theme);
+  }, [theme]);
+
   const nLanesValid = /^\d+$/.test(nLanesInput) && Number(nLanesInput) >= 1;
   const ladderLaneValid = /^\d+$/.test(ladderLaneInput) && Number(ladderLaneInput) >= 1;
   const nLanes = nLanesValid ? Number(nLanesInput) : 1;
   const ladderLane = ladderLaneValid ? Number(ladderLaneInput) : 1;
 
-  const parsedLadderSizes = useMemo(() => {
-    return ladderSizes
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => Number(s))
-      .filter((n) => Number.isFinite(n) && n > 0);
-  }, [ladderSizes]);
+  const parsedLadderSizes = useMemo(() => parseLadderSizes(ladderSizes), [ladderSizes]);
 
-  // Preset map
   const presetMap = useMemo(() => {
     const m = new Map<string, { key: string; label: string; sizes: number[] }>();
     LADDER_PRESET_GROUPS.forEach((g) => g.presets.forEach((p) => m.set(p.key, p)));
@@ -124,27 +124,18 @@ export default function App() {
     }
   };
 
-  // If user manually edits a selected preset, switch to custom
   useEffect(() => {
     if (ladderPresetKey === "custom") return;
     const p = presetMap.get(ladderPresetKey);
     if (!p) return;
     const presetString = p.sizes.join(",");
     const normalizedCurrent = ladderSizes.replace(/\s+/g, "");
-    if (normalizedCurrent !== presetString) {
-      setLadderPresetKey("custom");
-    }
+    if (normalizedCurrent !== presetString) setLadderPresetKey("custom");
   }, [ladderSizes, ladderPresetKey, presetMap]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("gel-theme", theme);
-  }, [theme]);
 
   const nativeWidth = analysis?.width ?? imgMeta.width;
   const nativeHeight = analysis?.height ?? imgMeta.height;
 
-  // Preview fit (visual only)
   const MAX_PREVIEW_HEIGHT = 720;
   const MAX_PREVIEW_WIDTH = 1200;
   const canvasScale = Math.min(1, MAX_PREVIEW_HEIGHT / nativeHeight, MAX_PREVIEW_WIDTH / nativeWidth);
@@ -168,7 +159,7 @@ export default function App() {
   const topPad = Math.max(Math.round(68 * uiScale), Math.round(laneLabelFont * 2.6));
   const bottomHandlePad = Math.round(52 * uiScale);
 
-  const displayImageUrl = analysis ? `${API}${analysis.imageUrl}` : filePreview;
+  const displayImageUrl = filePreview;
 
   const normalizedRegion = useMemo<[number, number]>(() => {
     const a = Math.min(laneRegion[0], laneRegion[1]);
@@ -177,24 +168,21 @@ export default function App() {
   }, [laneRegion]);
 
   const labelList = useMemo(() => {
-    const arr = laneLabels.split("\n").map((x) => x.trim()).filter(Boolean);
+    const arr = laneLabels
+      .split("\n")
+      .map((x) => x.trim())
+      .filter(Boolean);
     while (arr.length < nLanes) arr.push(`S ${arr.length + 1}`);
     return arr.slice(0, nLanes);
   }, [laneLabels, nLanes]);
 
   const provisionalLaneBounds = useMemo(() => {
     const [x0, x1] = normalizedRegion;
-    const xs = Array.from({ length: nLanes + 1 }, (_, i) =>
-      Math.round(x0 + ((x1 - x0) * i) / nLanes)
-    );
-    const out: LaneBound[] = [];
-    for (let i = 0; i < nLanes; i++) out.push({ x0: xs[i], x1: xs[i + 1] });
-    return out;
+    return buildEqualLanes(x0, x1, nLanes);
   }, [normalizedRegion, nLanes]);
 
   const laneBoundsToDraw = analysis?.laneBounds ?? provisionalLaneBounds;
 
-  // Native <-> screen transforms
   const sx = (x: number) => Math.round(x * canvasScale);
   const sy = (y: number) => Math.round(y * canvasScale);
   const nx = (xPx: number) => Math.round(xPx / canvasScale);
@@ -204,6 +192,8 @@ export default function App() {
     if (!file) {
       setFilePreview("");
       setAnalysis(null);
+      setSourceImage(null);
+      setSourceImageData(null);
       setErrorMsg("");
       return;
     }
@@ -219,14 +209,24 @@ export default function App() {
       setLaneRegion([0, w - 1]);
       setAnalysis(null);
       setErrorMsg("");
+      setSourceImage(img);
+
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+        setSourceImageData(ctx.getImageData(0, 0, w, h));
+      }
     };
     img.src = url;
 
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  const doAnalyze = useCallback(async () => {
-    if (!file) return;
+  const doAnalyze = useCallback(() => {
+    if (!sourceImageData) return;
     if (!nLanesValid || !ladderLaneValid) return;
     if (ladderLane < 1 || ladderLane > nLanes) return;
     if (parsedLadderSizes.length === 0) return;
@@ -240,43 +240,46 @@ export default function App() {
       setIsAnalyzing(true);
       setErrorMsg("");
 
-      const form = new FormData();
-      form.append("image", file);
-      form.append("n_lanes", String(nLanes));
-      form.append("ladder_lane", String(ladderLane));
-      form.append("ladder_sizes", parsedLadderSizes.join(","));
-      form.append("x0", String(x0));
-      form.append("x1", String(x1));
-      form.append("invert", String(invert));
+      const w = sourceImageData.width;
+      const h = sourceImageData.height;
 
-      form.append("clahe_clip", "2.0");
-      form.append("blur_k", "3");
-      form.append("prominence", "12");
-      form.append("min_dist", "8");
-      form.append("smooth_sigma", "2.0");
+      const laneBounds = buildEqualLanes(x0, x1, nLanes);
 
-      const { data } = await axios.post<AnalysisResponse>(`${API}/api/analyze`, form);
+      const gray = grayscaleFromImageData(sourceImageData);
+      const prep = preprocessGray(gray, w, h, invert);
+
+      const ladderIdx = ladderLane - 1;
+      const ladderLaneBound = laneBounds[ladderIdx];
+
+      const det = detectLadderBands(prep, w, h, ladderLaneBound, parsedLadderSizes.length, 8);
+
       if (runId !== analyzeRunId.current) return;
 
-      setAnalysis(data);
+      setAnalysis({
+        width: w,
+        height: h,
+        laneBounds,
+        ladderYAuto: det.peaks,
+        ladderSizesBp: parsedLadderSizes,
+        mismatch: det.mismatch,
+      });
 
-      if (data.ladderYAuto.length === data.ladderSizesBp.length) {
-        setLadderY(data.ladderYAuto);
+      if (det.peaks.length === parsedLadderSizes.length) {
+        setLadderY(det.peaks);
       } else {
-        const n = data.ladderSizesBp.length;
+        const n = parsedLadderSizes.length;
         const seed = Array.from({ length: n }, (_, i) =>
-          Math.round((0.15 + (0.7 * i) / Math.max(1, n - 1)) * data.height)
+          Math.round((0.15 + (0.7 * i) / Math.max(1, n - 1)) * h)
         );
         setLadderY(seed);
       }
     } catch (err: any) {
-      if (runId !== analyzeRunId.current) return;
-      setErrorMsg(err?.response?.data?.detail || err.message || "Analyze failed");
+      setErrorMsg(err?.message || "Analyze failed");
     } finally {
-      if (runId === analyzeRunId.current) setIsAnalyzing(false);
+      setIsAnalyzing(false);
     }
   }, [
-    file,
+    sourceImageData,
     nLanesValid,
     ladderLaneValid,
     ladderLane,
@@ -286,69 +289,11 @@ export default function App() {
     invert,
   ]);
 
-  // Auto-analyze on changes
   useEffect(() => {
-    if (!file) return;
-    const t = setTimeout(() => doAnalyze(), 450);
+    if (!sourceImageData) return;
+    const t = setTimeout(() => doAnalyze(), 350);
     return () => clearTimeout(t);
-  }, [doAnalyze, file]);
-
-  const doAnnotate = useCallback(async () => {
-    if (!analysis) return;
-    if (ladderY.length !== analysis.ladderSizesBp.length) return;
-
-    const runId = ++annotateRunId.current;
-
-    try {
-      setIsAnnotating(true);
-      setErrorMsg("");
-
-      const payload = {
-        imageId: analysis.imageId,
-        nLanes,
-        ladderLane,
-        ladderSizesBp: analysis.ladderSizesBp,
-        laneLabels: labelList,
-        ladderY,
-        laneBounds: analysis.laneBounds,
-        showLaneBoxes,
-        laneLabelAngle,
-        transparentBackground: transparentBg,
-        laneTextScale,
-        ladderTextScale,
-      };
-
-      const { data } = await axios.post(`${API}/api/annotate`, payload);
-      if (runId !== annotateRunId.current) return;
-      if (!data?.annotatedUrl) throw new Error("No annotatedUrl returned");
-
-      const url = `${API}${data.annotatedUrl}?t=${Date.now()}`;
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = transparentBg ? "gel_annotated_transparent.png" : "gel_annotated.png";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      showToast("Annotated PNG exported", "success");
-    } catch (err: any) {
-      if (runId !== annotateRunId.current) return;
-      setErrorMsg(err?.response?.data?.detail || err.message || "Annotate failed");
-    } finally {
-      if (runId === annotateRunId.current) setIsAnnotating(false);
-    }
-  }, [
-    analysis,
-    ladderY,
-    nLanes,
-    ladderLane,
-    labelList,
-    showLaneBoxes,
-    laneLabelAngle,
-    transparentBg,
-    laneTextScale,
-    ladderTextScale,
-  ]);
+  }, [doAnalyze, sourceImageData]);
 
   const clampRegion = (x0: number, x1: number, width: number) => {
     let a = Math.max(0, Math.min(width - 2, x0));
@@ -360,8 +305,150 @@ export default function App() {
     return [a, b] as [number, number];
   };
 
+  const doDownload = useCallback(async () => {
+    if (!analysis || !sourceImage) return;
+    if (ladderY.length !== analysis.ladderSizesBp.length) return;
+
+    try {
+      setIsAnnotating(true);
+      setErrorMsg("");
+
+      const w = analysis.width;
+      const h = analysis.height;
+
+      const scale = Math.max(1.0, Math.min(4.0, Math.pow(w / 900, 0.95)));
+      const lanePx = Math.max(12, Math.round(20 * scale * laneTextScale));
+      const ladderPx = Math.max(12, Math.round(19 * scale * ladderTextScale));
+
+      const lineW = Math.max(1, Math.round(2.4 * scale));
+      const tickW = Math.max(1, Math.round(1.4 * scale));
+      const tickLen = Math.max(6, Math.round(9 * scale));
+
+      const measureCanvas = document.createElement("canvas");
+      const mctx = measureCanvas.getContext("2d")!;
+      mctx.font = `${ladderPx}px "IBM Plex Mono"`;
+
+      let widest = 0;
+      for (const bp of analysis.ladderSizesBp) {
+        widest = Math.max(widest, mctx.measureText(`${bp} bp`).width);
+      }
+
+      const leftPadOut = Math.max(Math.round(30 * scale), Math.round(widest + 26 * scale));
+      const topPadOut = Math.max(Math.round(40 * scale), Math.round(lanePx * 2.8));
+      const rightPad = Math.round(20 * scale);
+      const bottomPad = Math.round(20 * scale);
+
+      const out = document.createElement("canvas");
+      out.width = w + leftPadOut + rightPad;
+      out.height = h + topPadOut + bottomPad;
+      const ctx = out.getContext("2d")!;
+
+      if (!transparentBg) {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, out.width, out.height);
+      } else {
+        ctx.clearRect(0, 0, out.width, out.height);
+      }
+
+      ctx.drawImage(sourceImage, leftPadOut, topPadOut, w, h);
+
+      // lane boxes + labels
+      for (let i = 0; i < analysis.laneBounds.length; i++) {
+        const b = analysis.laneBounds[i];
+        const isLadder = i === ladderLane - 1;
+        const x0 = leftPadOut + b.x0;
+        const x1 = leftPadOut + b.x1;
+        const y0 = topPadOut;
+        const y1 = topPadOut + h;
+
+        if (showLaneBoxes) {
+          ctx.strokeStyle = isLadder ? "#ff9f43" : "#4ea2ff";
+          ctx.lineWidth = lineW;
+          ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+        }
+
+        const label = labelList[i] ?? `S ${i + 1}`;
+        const cx = (x0 + x1) / 2;
+        const cy = Math.max(14 * scale, topPadOut * 0.46);
+
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate((laneLabelAngle * Math.PI) / 180);
+        ctx.font = `${lanePx}px "Sora"`;
+        ctx.fillStyle = "#111111";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, 0, 0);
+        ctx.restore();
+      }
+
+      // ladder axis + ticks + labels
+      if (ladderY.length === analysis.ladderSizesBp.length) {
+        const axisX = leftPadOut - Math.round(10 * scale);
+        ctx.strokeStyle = "#e35c5c";
+        ctx.lineWidth = tickW;
+        ctx.beginPath();
+        ctx.moveTo(axisX, topPadOut);
+        ctx.lineTo(axisX, topPadOut + h);
+        ctx.stroke();
+
+        ctx.font = `${ladderPx}px "IBM Plex Mono"`;
+        ctx.fillStyle = "#e35c5c";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+
+        for (let i = 0; i < analysis.ladderSizesBp.length; i++) {
+          const bp = analysis.ladderSizesBp[i];
+          const Y = topPadOut + ladderY[i];
+
+          ctx.beginPath();
+          ctx.moveTo(axisX, Y);
+          ctx.lineTo(axisX + tickLen, Y);
+          ctx.stroke();
+
+          const txt = `${bp} bp`;
+          const tw = ctx.measureText(txt).width;
+          const tx = Math.max(4, axisX - tw - Math.round(8 * scale));
+          ctx.fillText(txt, tx, Y);
+        }
+      }
+
+      const blob: Blob | null = await new Promise((resolve) => out.toBlob((b) => resolve(b), "image/png"));
+      if (!blob) throw new Error("Could not create PNG");
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const originalName = file?.name ?? "gel";
+      const baseName = originalName.replace(/\.[^/.]+$/, "");
+      a.download = `${baseName}_annotated.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      showToast("Annotated PNG exported", "success");
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Annotate/download failed");
+    } finally {
+      setIsAnnotating(false);
+    }
+  }, [
+    analysis,
+    sourceImage,
+    ladderY,
+    ladderLane,
+    labelList,
+    showLaneBoxes,
+    laneLabelAngle,
+    transparentBg,
+    laneTextScale,
+    ladderTextScale,
+    file,
+  ]);
+
   const [regionX0, regionX1] = normalizedRegion;
-  const canAnalyze = !!file && nLanesValid && ladderLaneValid && parsedLadderSizes.length > 0;
+  const canAnalyze = !!sourceImageData && nLanesValid && ladderLaneValid && parsedLadderSizes.length > 0;
   const laneBoundsValid = ladderLane >= 1 && ladderLane <= nLanes;
 
   const stageW = drawWidth + leftPad + 40;
@@ -369,392 +456,413 @@ export default function App() {
 
   return (
     <div className="saas-shell">
-      <header className="topbar reveal reveal-0">
-        <div className="brand">
-          <div className="brand-dot" />
-          <div>
-            <h1>Automated Gel Annotation Tool</h1>
-            <p>Automated ladder and lane labelling</p>
-          </div>
-        </div>
-        
-        <button
-          className="theme-toggle"
-          onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-          type="button"
-        >
-          {theme === "light" ? "🌙 Dark mode" : "☀️ Light mode"}
-        </button>
-      </header>
-      
-
-      {analysis?.mismatch && (
-        <div className="global-alert global-alert-warn">
-          <strong>Ladder mismatch detected.</strong> Automatic ladder detection did not match expected bands.
-          Check ladder preset, lane index, and boundaries — or manually drag red ladder labels to calibrate.
-        </div>
-      )}
-
-      <main className="workspace">
-        <aside className="panel panel-left reveal reveal-1">
+      <div className="app-grid">
+        <aside className="panel panel-left project-assets reveal reveal-1">
           <div className="panel-head">
-            <h2>Gel Settings</h2>
-            <p>Updates analyze automatically</p>
+            <h2>Project Assets</h2>
+            <p>Gel settings</p>
           </div>
 
-          <div className="form-field">
-            <label>Upload gel image</label>
-            <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          </div>
-
-          <div className="form-grid-2">
-            <div className="form-field">
-              <label>Total lanes</label>
-              <input
-                type="text"
-                inputMode="numeric"
-                value={nLanesInput}
-                onChange={(e) => {
-                  const v = e.target.value.trim();
-                  if (/^\d*$/.test(v)) setNLanesInput(v);
-                }}
-              />
-            </div>
+          <div className="settings-section">
+            <h3 className="settings-subhead">Input</h3>
 
             <div className="form-field">
-              <label>Ladder lane</label>
+              <label>Upload gel image</label>
+              <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+            </div>
+
+            <div className="form-grid-2">
+              <div className="form-field">
+                <label>Total lanes</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={nLanesInput}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    if (/^\d*$/.test(v)) setNLanesInput(v);
+                  }}
+                />
+              </div>
+                
+              <div className="form-field">
+                <label>Ladder lane</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={ladderLaneInput}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    if (/^\d*$/.test(v)) setLadderLaneInput(v);
+                  }}
+                />
+              </div>
+            </div>
+            <label className="check">
+                <input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} />
+                 Input image is inverted (negative)
+            </label>
+          </div>
+                
+          <div className="settings-section">
+            <h3 className="settings-subhead">Ladder</h3>
+                
+            <div className="form-field">
+              <label>Ladder presets</label>
+              <select value={ladderPresetKey} onChange={(e) => applyPreset(e.target.value)}>
+                {LADDER_PRESET_GROUPS.map((group) => (
+                  <optgroup key={group.group} label={group.group}>
+                    {group.presets.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+              
+            <div className="form-field">
+              <label>Ladder band sizes (bp, top→bottom)</label>
               <input
-                type="text"
-                inputMode="numeric"
-                value={ladderLaneInput}
-                onChange={(e) => {
-                  const v = e.target.value.trim();
-                  if (/^\d*$/.test(v)) setLadderLaneInput(v);
-                }}
+                value={ladderSizes}
+                onChange={(e) => setLadderSizes(e.target.value)}
+                placeholder="e.g. 2000,1000,750,500,250,100"
               />
             </div>
           </div>
-
-          <div className="form-field">
-            <label>Ladder presets</label>
-            <select value={ladderPresetKey} onChange={(e) => applyPreset(e.target.value)}>
-              {LADDER_PRESET_GROUPS.map((group) => (
-                <optgroup key={group.group} label={group.group}>
-                  {group.presets.map((p) => (
-                    <option key={p.key} value={p.key}>
-                      {p.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+              
+          <div className="settings-section">
+            <h3 className="settings-subhead">Labels</h3>
+              
+            <div className="form-field">
+              <label>Lane labels</label>
+              <textarea rows={6} value={laneLabels} onChange={(e) => setLaneLabels(e.target.value)} />
+            </div>
+              
+            <div className="form-field">
+              <label>
+                Lane label tilt: <strong>{laneLabelAngle}°</strong>
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={90}
+                value={laneLabelAngle}
+                onChange={(e) => setLaneLabelAngle(Number(e.target.value))}
+              />
+            </div>
+              
+            <div className="form-field">
+              <label>
+                Lane label size: <strong>{laneTextScale.toFixed(2)}×</strong>
+              </label>
+              <input
+                type="range"
+                min={0.6}
+                max={2.0}
+                step={0.05}
+                value={laneTextScale}
+                onChange={(e) => setLaneTextScale(Number(e.target.value))}
+              />
+            </div>
+              
+            <div className="form-field">
+              <label>
+                Ladder label size: <strong>{ladderTextScale.toFixed(2)}×</strong>
+              </label>
+              <input
+                type="range"
+                min={0.6}
+                max={2.0}
+                step={0.05}
+                value={ladderTextScale}
+                onChange={(e) => setLadderTextScale(Number(e.target.value))}
+              />
+            </div>
           </div>
-
-          <div className="form-field">
-            <label>Ladder band sizes (bp, top→bottom)</label>
-            <input
-              value={ladderSizes}
-              onChange={(e) => setLadderSizes(e.target.value)}
-              placeholder="e.g. 2000,1000,750,500,250,100"
-            />
-            <p className="hint">You can always type custom values even after selecting a preset.</p>
+              
+          <div className="settings-section">
+            <h3 className="settings-subhead">Display</h3>
+              
+            <div className="form-stack">
+              <label className="check">
+                <input type="checkbox" checked={showLaneBoxes} onChange={(e) => setShowLaneBoxes(e.target.checked)} />
+                Show lane grid
+              </label>
+              
+              <label className="check">
+                <input type="checkbox" checked={transparentBg} onChange={(e) => setTransparentBg(e.target.checked)} />
+                Transparent background (PNG)
+              </label>
+            </div>
           </div>
-
-          <div className="form-field">
-            <label>Lane labels</label>
-            <textarea rows={6} value={laneLabels} onChange={(e) => setLaneLabels(e.target.value)} />
+              
+          <div className="settings-section settings-section-export">
+            <h3 className="settings-subhead">Export</h3>
+              
+            <p className="hint">Preview is scaled for editing. Export always uses native resolution.</p>
+              
+            {!canAnalyze && <div className="msg warn">Add image + valid lanes + valid ladder sizes.</div>}
+            {canAnalyze && !laneBoundsValid && <div className="msg warn">Ladder lane must be between 1 and total lanes.</div>}
+            {errorMsg && <div className="msg error">{errorMsg}</div>}
+              
+            <button className="download-btn" onClick={doDownload} disabled={!analysis || isAnnotating}>
+              {isAnnotating ? "Generating PNG..." : "Generate & Download PNG"}
+            </button>
           </div>
-
-          <div className="form-stack">
-            <label className="check">
-              <input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} />
-              Inverted image
-            </label>
-
-            <label className="check">
-              <input type="checkbox" checked={showLaneBoxes} onChange={(e) => setShowLaneBoxes(e.target.checked)} />
-              Show lane boxes
-            </label>
-
-            <label className="check">
-              <input type="checkbox" checked={transparentBg} onChange={(e) => setTransparentBg(e.target.checked)} />
-              Transparent background (PNG)
-            </label>
-          </div>
-
-          <div className="form-field">
-            <label>
-              Lane label tilt: <strong>{laneLabelAngle}°</strong>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={75}
-              value={laneLabelAngle}
-              onChange={(e) => setLaneLabelAngle(Number(e.target.value))}
-            />
-            <p className="hint">Lower = flatter labels, higher = steeper labels</p>
-          </div>
-
-          <div className="form-field">
-            <label>
-              Lane label size: <strong>{laneTextScale.toFixed(2)}×</strong>
-            </label>
-            <input
-              type="range"
-              min={0.6}
-              max={2.0}
-              step={0.05}
-              value={laneTextScale}
-              onChange={(e) => setLaneTextScale(Number(e.target.value))}
-            />
-          </div>
-
-          <div className="form-field">
-            <label>
-              Ladder label size: <strong>{ladderTextScale.toFixed(2)}×</strong>
-            </label>
-            <input
-              type="range"
-              min={0.6}
-              max={2.0}
-              step={0.05}
-              value={ladderTextScale}
-              onChange={(e) => setLadderTextScale(Number(e.target.value))}
-            />
-          </div>
-
-          <p className="hint">Preview is scaled for editing. Export always uses native resolution.</p>
-
-          {!canAnalyze && <div className="msg warn">Add image + valid lanes + valid ladder sizes.</div>}
-          {canAnalyze && !laneBoundsValid && (
-            <div className="msg warn">Ladder lane must be between 1 and total lanes.</div>
-          )}
-          {errorMsg && <div className="msg error">{errorMsg}</div>}
-
-          <button className="download-btn" onClick={doAnnotate} disabled={!analysis || isAnnotating}>
-            {isAnnotating ? "Generating PNG..." : "Generate & Download PNG"}
-          </button>
-          <p className="hint">Uses current editor settings and ladder positions.</p>
         </aside>
 
-        <section className="panel panel-main reveal reveal-2">
-          <div className="panel-head">
-            <h2>Interactive editor</h2>
-            <p>Set lane region (yellow) and calibrate ladder bands (red)</p>
-          </div>
+        {/* Right main workspace */}
+        <section className="workspace-main">
+          <header className="topbar reveal reveal-0">
+            <div className="brand">
+              <div className="brand-dot" />
+              <div>
+                <h1>Automated Gel Annotation Tool</h1>  
+              </div>
+            </div>
 
-          {!file && <div className="empty">Upload an image to begin.</div>}
+            <button
+              className="theme-toggle"
+              onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+              type="button"
+            >
+              {theme === "light" ? "🌙 Dark mode" : "☀️ Light mode"}
+            </button>
+          </header>
 
-          {file && (
-            <div className="canvas-frame">
-              <Stage width={stageW} height={stageH}>
-                <Layer>
-                  <GelImage src={displayImageUrl} x={leftPad} y={topPad} w={drawWidth} h={drawHeight} />
+          {analysis?.mismatch && (
+            <div className="global-alert global-alert-warn">
+              <strong>Could not identify ladder bands correctly.</strong> Please check ladder preset, total lanes, and gel
+              boundaries — or manually drag red ladder labels to calibrate.
+            </div>
+          )}
 
-                  <Rect
-                    x={leftPad}
-                    y={topPad}
-                    width={drawWidth}
-                    height={drawHeight}
-                    stroke="rgba(0,0,0,0.18)"
-                    strokeWidth={1}
-                    listening={false}
-                  />
+          <section className="panel panel-main reveal reveal-2">
+            <div className="panel-head">
+              <h2>Interactive editor</h2>
+              <p>Set sample lane region (yellow) and manually adjust ladder bands (red)</p>
+            </div>
 
-                  <Rect
-                    x={leftPad}
-                    y={topPad}
-                    width={Math.max(0, sx(regionX0))}
-                    height={drawHeight}
-                    fill="rgba(0,0,0,0.24)"
-                  />
-                  <Rect
-                    x={leftPad + sx(regionX1)}
-                    y={topPad}
-                    width={Math.max(0, drawWidth - sx(regionX1))}
-                    height={drawHeight}
-                    fill="rgba(0,0,0,0.24)"
-                  />
+            {!file && <div className="empty">Please upload an image.</div>}
 
-                  {showLaneBoxes &&
-                    laneBoundsToDraw.map((b, i) => {
-                      const isLadder = i === ladderLane - 1;
-                      return (
-                        <Group key={`lane-${i}`}>
-                          {isLadder && (
+            {file && (
+              <div className="canvas-frame">
+                <Stage width={stageW} height={stageH}>
+                  <Layer>
+                    <GelImage src={displayImageUrl} x={leftPad} y={topPad} w={drawWidth} h={drawHeight} />
+
+                    <Rect
+                      x={leftPad}
+                      y={topPad}
+                      width={drawWidth}
+                      height={drawHeight}
+                      stroke="rgba(0,0,0,0.18)"
+                      strokeWidth={1}
+                      listening={false}
+                    />
+
+                    <Rect
+                      x={leftPad}
+                      y={topPad}
+                      width={Math.max(0, sx(regionX0))}
+                      height={drawHeight}
+                      fill="rgba(0,0,0,0.24)"
+                    />
+                    <Rect
+                      x={leftPad + sx(regionX1)}
+                      y={topPad}
+                      width={Math.max(0, drawWidth - sx(regionX1))}
+                      height={drawHeight}
+                      fill="rgba(0,0,0,0.24)"
+                    />
+
+                    {showLaneBoxes &&
+                      laneBoundsToDraw.map((b, i) => {
+                        const isLadder = i === ladderLane - 1;
+                        return (
+                          <Group key={`lane-${i}`}>
+                            {isLadder && (
+                              <Rect
+                                x={leftPad + sx(b.x0)}
+                                y={topPad}
+                                width={Math.max(1, sx(b.x1 - b.x0))}
+                                height={drawHeight}
+                                fill="rgba(255,159,67,0.10)"
+                              />
+                            )}
                             <Rect
                               x={leftPad + sx(b.x0)}
                               y={topPad}
                               width={Math.max(1, sx(b.x1 - b.x0))}
                               height={drawHeight}
-                              fill="rgba(255,159,67,0.10)"
+                              stroke={isLadder ? "#ff9f43" : "#4ea2ff"}
+                              strokeWidth={isLadder ? laneBoxStroke + 1 : laneBoxStroke}
                             />
-                          )}
-                          <Rect
-                            x={leftPad + sx(b.x0)}
-                            y={topPad}
-                            width={Math.max(1, sx(b.x1 - b.x0))}
-                            height={drawHeight}
-                            stroke={isLadder ? "#ff9f43" : "#4ea2ff"}
-                            strokeWidth={isLadder ? laneBoxStroke + 1 : laneBoxStroke}
-                          />
-                        </Group>
-                      );
-                    })}
+                          </Group>
+                        );
+                      })}
 
-                  <Group
-                    x={leftPad + sx(regionX0)}
-                    y={topPad}
-                    draggable
-                    dragBoundFunc={(pos) => ({
-                      x: Math.max(
-                        leftPad,
-                        Math.min(leftPad + sx(regionX1) - Math.max(4, Math.round(5 * canvasScale)), pos.x)
-                      ),
-                      y: topPad,
-                    })}
-                    onDragMove={(e) => {
-                      const nativeX0 = nx(e.target.x() - leftPad);
-                      setLaneRegion((prev) => clampRegion(nativeX0, prev[1], nativeWidth));
-                    }}
-                  >
-                    <Rect x={-12} y={0} width={24} height={drawHeight + bottomHandlePad} fill="rgba(0,0,0,0)" />
-                    <Line points={[0, 0, 0, drawHeight]} stroke="#e9be3a" strokeWidth={laneBoxStroke + 1} />
-                    <Rect
-                      x={-Math.round(handleW / 2)}
-                      y={drawHeight + 6}
-                      width={handleW}
-                      height={handleH}
-                      cornerRadius={4}
-                      fill="#e9be3a"
-                    />
-                    <Text
-                      x={-Math.round(16 * uiScale)}
-                      y={drawHeight + 6 + handleH + 2}
-                      text="Start"
-                      fill="#e9be3a"
-                      fontSize={smallLabelFont}
-                    />
-                  </Group>
-
-                  <Group
-                    x={leftPad + sx(regionX1)}
-                    y={topPad}
-                    draggable
-                    dragBoundFunc={(pos) => ({
-                      x: Math.max(
-                        leftPad + sx(regionX0) + Math.max(4, Math.round(5 * canvasScale)),
-                        Math.min(leftPad + drawWidth - 1, pos.x)
-                      ),
-                      y: topPad,
-                    })}
-                    onDragMove={(e) => {
-                      const nativeX1 = nx(e.target.x() - leftPad);
-                      setLaneRegion((prev) => clampRegion(prev[0], nativeX1, nativeWidth));
-                    }}
-                  >
-                    <Rect x={-12} y={0} width={24} height={drawHeight + bottomHandlePad} fill="rgba(0,0,0,0)" />
-                    <Line points={[0, 0, 0, drawHeight]} stroke="#e9be3a" strokeWidth={laneBoxStroke + 1} />
-                    <Rect
-                      x={-Math.round(handleW / 2)}
-                      y={drawHeight + 6}
-                      width={handleW}
-                      height={handleH}
-                      cornerRadius={4}
-                      fill="#e9be3a"
-                    />
-                    <Text
-                      x={-Math.round(12 * uiScale)}
-                      y={drawHeight + 6 + handleH + 2}
-                      text="End"
-                      fill="#e9be3a"
-                      fontSize={smallLabelFont}
-                    />
-                  </Group>
-
-                  <Line
-                    points={[
-                      leftPad - Math.round(10 * uiScale),
-                      topPad,
-                      leftPad - Math.round(10 * uiScale),
-                      topPad + drawHeight,
-                    ]}
-                    stroke="#e35c5c"
-                    strokeWidth={axisStroke}
-                  />
-
-                  {laneBoundsToDraw.map((b, i) => {
-                    const label = labelList[i] ?? `S ${i + 1}`;
-                    const cx = leftPad + sx((b.x0 + b.x1) / 2);
-                    const labelY = Math.round(topPad * 0.62);
-                    const approxTextW = Math.max(12, label.length * laneLabelFont * 0.58);
-
-                    return (
-                      <Text
-                        key={`lane-label-${i}`}
-                        x={cx}
-                        y={labelY}
-                        text={label}
-                        fill="#111111"
-                        fontSize={laneLabelFont}
-                        fontFamily="Sora"
-                        rotation={laneLabelAngle}
-                        offsetX={approxTextW / 2}
-                        offsetY={laneLabelFont / 2}
-                        listening={false}
+                    {/* Start boundary */}
+                    <Group
+                      x={leftPad + sx(regionX0)}
+                      y={topPad}
+                      draggable
+                      dragBoundFunc={(pos) => ({
+                        x: Math.max(
+                          leftPad,
+                          Math.min(leftPad + sx(regionX1) - Math.max(4, Math.round(5 * canvasScale)), pos.x)
+                        ),
+                        y: topPad,
+                      })}
+                      onDragMove={(e) => {
+                        const nativeX0 = nx(e.target.x() - leftPad);
+                        setLaneRegion((prev) => clampRegion(nativeX0, prev[1], nativeWidth));
+                      }}
+                    >
+                      <Rect x={-12} y={0} width={24} height={drawHeight + bottomHandlePad} fill="rgba(0,0,0,0)" />
+                      <Line points={[0, 0, 0, drawHeight]} stroke="#e9be3a" strokeWidth={laneBoxStroke + 1} />
+                      <Rect
+                        x={-Math.round(handleW / 2)}
+                        y={drawHeight + 6}
+                        width={handleW}
+                        height={handleH}
+                        cornerRadius={4}
+                        fill="#e9be3a"
                       />
-                    );
-                  })}
+                      <Text
+                        x={-Math.round(16 * uiScale)}
+                        y={drawHeight + 6 + handleH + 2}
+                        text="Start"
+                        fill="#111111"
+                        fontSize={smallLabelFont}
+                      />
+                    </Group>
 
-                  {analysis &&
-                    analysis.ladderSizesBp.map((bp, i) => {
-                      const yNative = ladderY[i] ?? 20;
-                      const yScreen = sy(yNative);
-                      const yOffset = Math.round(9 * uiScale);
+                    {/* End boundary */}
+                    <Group
+                      x={leftPad + sx(regionX1)}
+                      y={topPad}
+                      draggable
+                      dragBoundFunc={(pos) => ({
+                        x: Math.max(
+                          leftPad + sx(regionX0) + Math.max(4, Math.round(5 * canvasScale)),
+                          Math.min(leftPad + drawWidth - 1, pos.x)
+                        ),
+                        y: topPad,
+                      })}
+                      onDragMove={(e) => {
+                        const nativeX1 = nx(e.target.x() - leftPad);
+                        setLaneRegion((prev) => clampRegion(prev[0], nativeX1, nativeWidth));
+                      }}
+                    >
+                      <Rect x={-12} y={0} width={24} height={drawHeight + bottomHandlePad} fill="rgba(0,0,0,0)" />
+                      <Line points={[0, 0, 0, drawHeight]} stroke="#e9be3a" strokeWidth={laneBoxStroke + 1} />
+                      <Rect
+                        x={-Math.round(handleW / 2)}
+                        y={drawHeight + 6}
+                        width={handleW}
+                        height={handleH}
+                        cornerRadius={4}
+                        fill="#e9be3a"
+                      />
+                      <Text
+                        x={-Math.round(12 * uiScale)}
+                        y={drawHeight + 6 + handleH + 2}
+                        text="End"
+                        fill="#111111"
+                        fontSize={smallLabelFont}
+                      />
+                    </Group>
+
+                    <Line
+                      points={[
+                        leftPad - Math.round(10 * uiScale),
+                        topPad,
+                        leftPad - Math.round(10 * uiScale),
+                        topPad + drawHeight,
+                      ]}
+                      stroke="#e35c5c"
+                      strokeWidth={axisStroke}
+                    />
+
+                    {laneBoundsToDraw.map((b, i) => {
+                      const label = labelList[i] ?? `S ${i + 1}`;
+                      const cx = leftPad + sx((b.x0 + b.x1) / 2);
+                      const labelY = Math.round(topPad * 0.62);
+                      const approxTextW = Math.max(12, label.length * laneLabelFont * 0.58);
 
                       return (
-                        <Group key={`ladder-${i}`}>
-                          <Line
-                            points={[
-                              leftPad - Math.round(10 * uiScale),
-                              topPad + yScreen,
-                              leftPad - Math.round(2 * uiScale),
-                              topPad + yScreen,
-                            ]}
-                            stroke="#e35c5c"
-                            strokeWidth={axisStroke}
-                          />
-                          <Text
-                            x={Math.round(10 * uiScale)}
-                            y={topPad + yScreen - yOffset}
-                            text={`${bp} bp`}
-                            fill="#e35c5c"
-                            fontSize={ladderLabelFont}
-                            fontFamily="Sora"
-                            draggable
-                            dragBoundFunc={(pos) => ({
-                              x: Math.round(10 * uiScale),
-                              y: Math.max(topPad, Math.min(topPad + drawHeight - Math.round(14 * uiScale), pos.y)),
-                            })}
-                            onDragMove={(e) => {
-                              const nativeY = ny(e.target.y() - topPad + yOffset);
-                              setLadderY((prev) => {
-                                const copy = [...prev];
-                                copy[i] = Math.max(0, Math.min(nativeHeight - 1, nativeY));
-                                return copy;
-                              });
-                            }}
-                          />
-                        </Group>
+                        <Text
+                          key={`lane-label-${i}`}
+                          x={cx}
+                          y={labelY}
+                          text={label}
+                          fill="#111111"
+                          fontSize={laneLabelFont}
+                          fontFamily="Sora"
+                          rotation={laneLabelAngle}
+                          offsetX={approxTextW / 2}
+                          offsetY={laneLabelFont / 2}
+                          listening={false}
+                        />
                       );
                     })}
-                </Layer>
-              </Stage>
-            </div>
-          )}
+
+                    {analysis &&
+                      analysis.ladderSizesBp.map((bp, i) => {
+                        const yNative = ladderY[i] ?? 20;
+                        const yScreen = sy(yNative);
+                        const yOffset = Math.round(9 * uiScale);
+
+                        return (
+                          <Group key={`ladder-${i}`}>
+                            <Line
+                              points={[
+                                leftPad - Math.round(10 * uiScale),
+                                topPad + yScreen,
+                                leftPad - Math.round(2 * uiScale),
+                                topPad + yScreen,
+                              ]}
+                              stroke="#e35c5c"
+                              strokeWidth={axisStroke}
+                            />
+                            <Text
+                              x={Math.round(10 * uiScale)}
+                              y={topPad + yScreen - yOffset}
+                              text={`${bp} bp`}
+                              fill="#e35c5c"
+                              fontSize={ladderLabelFont}
+                              fontFamily="IBM Plex Mono"
+                              draggable
+                              dragBoundFunc={(pos) => ({
+                                x: Math.round(10 * uiScale),
+                                y: Math.max(topPad, Math.min(topPad + drawHeight - Math.round(14 * uiScale), pos.y)),
+                              })}
+                              onDragMove={(e) => {
+                                const nativeY = ny(e.target.y() - topPad + yOffset);
+                                setLadderY((prev) => {
+                                  const copy = [...prev];
+                                  copy[i] = Math.max(0, Math.min(nativeHeight - 1, nativeY));
+                                  return copy;
+                                });
+                              }}
+                            />
+                          </Group>
+                        );
+                      })}
+                  </Layer>
+                </Stage>
+              </div>
+            )}
+          </section>
+
+          <footer className="app-footer">
+            <span>© Siu Fung Stanley Ho 2026. All rights reserved.</span>
+          </footer>
         </section>
-      </main>
+      </div>
 
       {toast && <div className={`toast toast-${toast.type}`}>{toast.message}</div>}
     </div>

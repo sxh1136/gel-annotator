@@ -1,7 +1,6 @@
 {
   "dependencies": {
-    "axios": "^1.19.0",
-    "konva": "^10.3.0",
+    "konva": "^10.3.1",
     "react-konva": "^19.2.5",
     "use-image": "^1.1.4"
   }
