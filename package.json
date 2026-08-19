@@ -1,7 +1,9 @@
 {
-  "dependencies": {
-    "konva": "^10.3.1",
-    "react-konva": "^19.2.5",
-    "use-image": "^1.1.4"
+  "homepage": "https://sxh1136.github.io/gel-annotator",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
   }
 }

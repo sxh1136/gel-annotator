@@ -3,8 +3,5 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  base: "/gel-annotator/", 
-  resolve: {
-    dedupe: ["react", "react-dom"],
-  },
+  base: "/gel-annotator/",
 });
