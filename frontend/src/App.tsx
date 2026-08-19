@@ -81,7 +81,7 @@ export default function App() {
   const [ladderY, setLadderY] = useState<number[]>([]); // native coords
 
   const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
-  const setIsAnalyzing = (_v: boolean) => {}; // intentionally no UI spinner for analyze
+  const setIsAnalyzing = (_v: boolean) => {}; // intentionally no analyze spinner
   const [isAnnotating, setIsAnnotating] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [toast, setToast] = useState<ToastState>(null);
@@ -155,8 +155,26 @@ export default function App() {
   const laneBoxStroke = Math.max(1, Math.round(2 * uiScale));
   const axisStroke = Math.max(1, Math.round(1 * uiScale));
 
+  const labelList = useMemo(() => {
+    const arr = laneLabels
+      .split("\n")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    while (arr.length < nLanes) arr.push(`S ${arr.length + 1}`);
+    return arr.slice(0, nLanes);
+  }, [laneLabels, nLanes]);
+
+  const maxLabelChars = Math.max(1, ...labelList.map((s) => s.length));
+  const laneAngleRad = (Math.abs(laneLabelAngle) * Math.PI) / 180;
+  const estMaxLabelWidth = Math.max(laneLabelFont, maxLabelChars * laneLabelFont * 0.58);
+  const laneLabelBBoxHeight =
+    Math.abs(estMaxLabelWidth * Math.sin(laneAngleRad)) + Math.abs(laneLabelFont * Math.cos(laneAngleRad));
+
   const leftPad = Math.round(130 * uiScale);
-  const topPad = Math.max(Math.round(68 * uiScale), Math.round(laneLabelFont * 2.6));
+  const topPad = Math.max(
+    Math.round(68 * uiScale),
+    Math.ceil((laneLabelBBoxHeight / 2 + 10 * uiScale) / 0.62)
+  );
   const bottomHandlePad = Math.round(52 * uiScale);
 
   const displayImageUrl = filePreview;
@@ -166,15 +184,6 @@ export default function App() {
     const b = Math.max(laneRegion[0], laneRegion[1]);
     return [a, b];
   }, [laneRegion]);
-
-  const labelList = useMemo(() => {
-    const arr = laneLabels
-      .split("\n")
-      .map((x) => x.trim())
-      .filter(Boolean);
-    while (arr.length < nLanes) arr.push(`S ${arr.length + 1}`);
-    return arr.slice(0, nLanes);
-  }, [laneLabels, nLanes]);
 
   const provisionalLaneBounds = useMemo(() => {
     const [x0, x1] = normalizedRegion;
@@ -326,15 +335,25 @@ export default function App() {
 
       const measureCanvas = document.createElement("canvas");
       const mctx = measureCanvas.getContext("2d")!;
-      mctx.font = `${ladderPx}px "IBM Plex Mono"`;
 
+      mctx.font = `${ladderPx}px "IBM Plex Mono"`;
       let widest = 0;
       for (const bp of analysis.ladderSizesBp) {
         widest = Math.max(widest, mctx.measureText(`${bp} bp`).width);
       }
 
+      mctx.font = `${lanePx}px "Sora"`;
+      let maxLaneLabelWidth = 0;
+      for (const lbl of labelList) {
+        maxLaneLabelWidth = Math.max(maxLaneLabelWidth, mctx.measureText(lbl).width);
+      }
+
+      const exportLaneAngleRad = (Math.abs(laneLabelAngle) * Math.PI) / 180;
+      const rotatedLaneLabelHeight =
+        Math.abs(maxLaneLabelWidth * Math.sin(exportLaneAngleRad)) + Math.abs(lanePx * Math.cos(exportLaneAngleRad));
+
       const leftPadOut = Math.max(Math.round(30 * scale), Math.round(widest + 26 * scale));
-      const topPadOut = Math.max(Math.round(40 * scale), Math.round(lanePx * 2.8));
+      const topPadOut = Math.max(Math.round(40 * scale), Math.round(rotatedLaneLabelHeight + 14 * scale));
       const rightPad = Math.round(20 * scale);
       const bottomPad = Math.round(20 * scale);
 
@@ -369,7 +388,7 @@ export default function App() {
 
         const label = labelList[i] ?? `S ${i + 1}`;
         const cx = (x0 + x1) / 2;
-        const cy = Math.max(14 * scale, topPadOut * 0.46);
+        const cy = Math.max(rotatedLaneLabelHeight / 2 + 4 * scale, topPadOut * 0.52);
 
         ctx.save();
         ctx.translate(cx, cy);
@@ -484,7 +503,7 @@ export default function App() {
                   }}
                 />
               </div>
-                
+
               <div className="form-field">
                 <label>Ladder lane</label>
                 <input
@@ -498,15 +517,16 @@ export default function App() {
                 />
               </div>
             </div>
+
             <label className="check">
-                <input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} />
-                 Input image is inverted (negative)
+              <input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} />
+              Input image is inverted (negative)
             </label>
           </div>
-                
+
           <div className="settings-section">
             <h3 className="settings-subhead">Ladder</h3>
-                
+
             <div className="form-field">
               <label>Ladder presets</label>
               <select value={ladderPresetKey} onChange={(e) => applyPreset(e.target.value)}>
@@ -521,7 +541,7 @@ export default function App() {
                 ))}
               </select>
             </div>
-              
+
             <div className="form-field">
               <label>Ladder band sizes (bp, top→bottom)</label>
               <input
@@ -531,15 +551,15 @@ export default function App() {
               />
             </div>
           </div>
-              
+
           <div className="settings-section">
             <h3 className="settings-subhead">Labels</h3>
-              
+
             <div className="form-field">
               <label>Lane labels</label>
               <textarea rows={6} value={laneLabels} onChange={(e) => setLaneLabels(e.target.value)} />
             </div>
-              
+
             <div className="form-field">
               <label>
                 Lane label tilt: <strong>{laneLabelAngle}°</strong>
@@ -552,7 +572,7 @@ export default function App() {
                 onChange={(e) => setLaneLabelAngle(Number(e.target.value))}
               />
             </div>
-              
+
             <div className="form-field">
               <label>
                 Lane label size: <strong>{laneTextScale.toFixed(2)}×</strong>
@@ -566,7 +586,7 @@ export default function App() {
                 onChange={(e) => setLaneTextScale(Number(e.target.value))}
               />
             </div>
-              
+
             <div className="form-field">
               <label>
                 Ladder label size: <strong>{ladderTextScale.toFixed(2)}×</strong>
@@ -581,45 +601,45 @@ export default function App() {
               />
             </div>
           </div>
-              
+
           <div className="settings-section">
             <h3 className="settings-subhead">Display</h3>
-              
+
             <div className="form-stack">
               <label className="check">
                 <input type="checkbox" checked={showLaneBoxes} onChange={(e) => setShowLaneBoxes(e.target.checked)} />
-                Show lane grid
+                Show lane boxes
               </label>
-              
+
               <label className="check">
                 <input type="checkbox" checked={transparentBg} onChange={(e) => setTransparentBg(e.target.checked)} />
                 Transparent background (PNG)
               </label>
             </div>
           </div>
-              
+
           <div className="settings-section settings-section-export">
             <h3 className="settings-subhead">Export</h3>
-              
+
             <p className="hint">Preview is scaled for editing. Export always uses native resolution.</p>
-              
+
             {!canAnalyze && <div className="msg warn">Add image + valid lanes + valid ladder sizes.</div>}
             {canAnalyze && !laneBoundsValid && <div className="msg warn">Ladder lane must be between 1 and total lanes.</div>}
             {errorMsg && <div className="msg error">{errorMsg}</div>}
-              
+
             <button className="download-btn" onClick={doDownload} disabled={!analysis || isAnnotating}>
               {isAnnotating ? "Generating PNG..." : "Generate & Download PNG"}
             </button>
           </div>
         </aside>
 
-        {/* Right main workspace */}
         <section className="workspace-main">
           <header className="topbar reveal reveal-0">
             <div className="brand">
               <div className="brand-dot" />
               <div>
-                <h1>Automated Gel Annotation Tool</h1>  
+                <h1>Automated Gel Annotation Tool</h1>
+                <p>Automatic annotation of ladder bands and sample lanes</p>
               </div>
             </div>
 
