@@ -101,6 +101,10 @@ export default function App() {
     localStorage.setItem("gel-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    document.title = "Automated Gel Annotation Tool";
+  }, []);
+
   const nLanesValid = /^\d+$/.test(nLanesInput) && Number(nLanesInput) >= 1;
   const ladderLaneValid = /^\d+$/.test(ladderLaneInput) && Number(ladderLaneInput) >= 1;
   const nLanes = nLanesValid ? Number(nLanesInput) : 1;
@@ -652,7 +656,7 @@ export default function App() {
                title="View on GitHub"
              >
                <img
-                  src="src/icons/github.png"
+                  src={`${import.meta.env.BASE_URL}/github.png`}
                   alt=""
                   width={18}
                   height={18}
@@ -670,7 +674,7 @@ export default function App() {
                title="Visit personal website"
              >
                <img
-                  src="src/icons/website.jpg"
+                  src={`${import.meta.env.BASE_URL}/website.jpg`}
                   alt=""
                   width={18}
                   height={18}
