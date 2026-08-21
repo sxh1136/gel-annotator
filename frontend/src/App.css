@@ -195,6 +195,60 @@ body {
   background: var(--bg-panel);
 }
 
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-link {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color var(--ease), transform var(--ease), background var(--ease);
+}
+
+.icon-link:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.icon-link svg {
+  width: 18px;
+  height: 18px;
+}
+
+.github-link {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color var(--ease), background var(--ease), transform var(--ease);
+}
+
+.github-link:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.github-link svg {
+  width: 18px;
+  height: 18px;
+}
+
 .brand {
   min-width: 0;
   display: flex;

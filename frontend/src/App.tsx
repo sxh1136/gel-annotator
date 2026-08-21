@@ -642,15 +642,52 @@ export default function App() {
                 <p>Automatic annotation of ladder bands and sample lanes</p>
               </div>
             </div>
+            <div className="topbar-actions">
+             <a
+               className="icon-link"
+               href="https://github.com/sxh1136/gel-annotator"
+               target="_blank"
+               rel="noopener noreferrer"
+               aria-label="Open GitHub repository"
+               title="View on GitHub"
+             >
+               <img
+                  src="src/icons/github.png"
+                  alt=""
+                  width={18}
+                  height={18}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+             </a>
 
-            <button
-              className="theme-toggle"
-              onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-              type="button"
-            >
-              {theme === "light" ? "🌙 Dark mode" : "☀️ Light mode"}
-            </button>
-          </header>
+             <a
+               className="icon-link"
+               href="https://sfsho.carrd.co"
+               target="_blank"
+               rel="noopener noreferrer"
+               aria-label="Open personal website"
+               title="Visit personal website"
+             >
+               <img
+                  src="src/icons/website.jpg"
+                  alt=""
+                  width={18}
+                  height={18}
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                />
+             </a>
+
+              <button
+                className="theme-toggle"
+                onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+                type="button"
+              >
+                {theme === "light" ? "🌙 Dark mode" : "☀️ Light mode"}
+              </button>
+          </div>
+        </header>
 
           {analysis?.mismatch && (
             <div className="global-alert global-alert-warn">
